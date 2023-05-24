@@ -1,0 +1,37 @@
+---
+- name: Update cache and upgrade
+  apt:
+    update_cache: yes
+    upgrade: yes
+
+- name: Install java and curl
+  apt:
+    name: "{{ item }}"
+  with_items: 
+    - openjdk-11-jre
+    - openjdk-8-jdk
+    - curl
+
+- name: Update cache after java install
+  apt:
+    update_cache: yes
+
+- name: Get key
+  shell: curl -fsSL {{ key_link }} | sudo tee {{ key_path }} > /dev/null
+
+- name: Add repo 
+  shell: echo deb [signed-by={{ key_path }}] https://pkg.jenkins.io/debian binary/ | sudo tee {{ jenkins_source_file_path }} > /dev/null
+
+- name: Update cache and install jenkins and maven
+  apt: 
+    update_cache: yes
+    name: "{{ item }}"
+  with_items:
+    - jenkins
+    - maven
+
+- name: Start Jenkins
+  service:
+    name: jenkins
+    enabled: yes
+    state: started

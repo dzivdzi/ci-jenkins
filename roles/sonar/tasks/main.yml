@@ -1,0 +1,245 @@
+- name: Copy file with owner and permissions
+  ansible.builtin.copy:
+    src: /etc/sysctl.conf
+    dest: /root/sysctl.conf_backup
+    remote_src: yes
+
+- name: Create sysctl.conf file
+  copy:
+    dest: "/etc/sysctl.conf"
+    content: |
+      vm.max_map_count=262144
+      fs.file-max=65536
+      ulimit -n 65536
+      ulimit -u 4096
+      EOT
+      cp /etc/security/limits.conf /root/sec_limit.conf_backup
+      cat <<EOT> /etc/security/limits.conf
+      sonarqube   -   nofile   65536
+      sonarqube   -   nproc    409
+  become: true
+
+- name: Update cache and install openjdk-11
+  apt:
+    name: openjdk-11-jdk
+    update_cache: yes
+
+
+- name: Update Java alternatives
+  become: true
+  command: update-alternatives --config java
+
+- name: Update cache
+  become: true
+  apt:
+    update_cache: yes
+
+- name: Add PostgreSQL apt key
+  become: true
+  apt_key:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
+- name: Add PostgreSQL repository
+  become: true
+  shell: |
+    sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" >> /etc/apt/sources.list.d/pgdg.list'
+
+- name: Install postgresql and contrib
+  become: true
+  apt:
+    name: "{{ item }}"
+  with_items: 
+    - postgresql
+    - postgresql-contrib
+
+- name: Start postgre service
+  systemd:
+    name: postgresql.service
+    state: started
+    enabled: yes
+  become: true
+
+- name: Configure postgresql
+  shell: |
+    sudo echo "postgres:admin123" | chpasswd
+    runuser -l postgres -c "createuser sonar"
+    sudo -i -u postgres psql -c "ALTER USER sonar WITH ENCRYPTED PASSWORD 'admin123';"
+    sudo -i -u postgres psql -c "CREATE DATABASE sonarqube OWNER sonar;"
+    sudo -i -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE sonarqube to sonar;"
+
+- name: Restart postgresql
+  service:
+    name: postgresql.service
+    state: restarted
+
+- name: Make a sonraqube directory
+  file:
+    path: /sonarqube
+    state: directory
+
+- name: Download SonarQube ZIP
+  ansible.builtin.get_url:
+    url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-8.3.0.34182.zip"
+    dest: "/sonarqube/sonarqube-8.3.0.34182.zip"
+    mode: '0644'
+
+- name: Install zip package
+  ansible.builtin.apt:
+    name: zip
+    state: present
+
+- name: Extract SonarQube
+  ansible.builtin.unarchive:
+    src: "/sonarqube/sonarqube-8.3.0.34182.zip"
+    dest: "/opt/"
+    extra_opts: "-o"
+    creates: "/opt/sonarqube-8.3.0.34182/"
+    remote_src: yes
+
+- name: Rename SonarQube directory
+  ansible.builtin.command:
+    cmd: "mv /opt/sonarqube-8.3.0.34182/ /opt/sonarqube"
+
+- name: Create SonarQube group
+  ansible.builtin.group:
+    name: sonar
+    state: present
+
+- name: Create SonarQube user
+  ansible.builtin.user:
+    name: sonar
+    comment: "SonarQube - User"
+    home: "/opt/sonarqube/"
+    group: sonar
+    create_home: yes
+    state: present
+
+- name: Set ownership for SonarQube directory
+  ansible.builtin.file:
+    path: "/opt/sonarqube/"
+    owner: sonar
+    group: sonar
+    recurse: yes
+
+- name: Backup sonar.properties
+  ansible.builtin.copy:
+    src: "/opt/sonarqube/conf/sonar.properties"
+    dest: "/root/sonar.properties_backup"
+    remote_src: yes
+
+- name: Create sonar.properties file
+  ansible.builtin.copy:
+    dest: "/opt/sonarqube/conf/sonar.properties"
+    content: |
+      sonar.jdbc.username=sonar
+      sonar.jdbc.password=admin123
+      sonar.jdbc.url=jdbc:postgresql://localhost/sonarqube
+      sonar.web.host=0.0.0.0
+      sonar.web.port=9000
+      sonar.web.javaAdditionalOpts=-server
+      sonar.search.javaOpts=-Xmx512m -Xms512m -XX:+HeapDumpOnOutOfMemoryError
+      sonar.log.level=INFO
+      sonar.path.logs=logs
+
+- name: Create systemd service file for SonarQube
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/sonarqube.service"
+    content: |
+      [Unit]
+      Description=SonarQube service
+      After=syslog.target network.target
+
+      [Service]
+      Type=forking
+      ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+      ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+      User=sonar
+      Group=sonar
+      Restart=always
+      LimitNOFILE=65536
+      LimitNPROC=4096
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: Enable SonarQube service
+  ansible.builtin.service:
+    name: sonarqube
+    enabled: yes
+
+- name: Install Nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+
+- name: Remove default Nginx site
+  ansible.builtin.file:
+    path: "/etc/nginx/sites-enabled/default"
+    state: absent
+
+- name: Remove default Nginx configuration
+  ansible.builtin.file:
+    path: "/etc/nginx/sites-available/default"
+    state: absent
+
+- name: Create Nginx site for SonarQube
+  ansible.builtin.copy:
+    dest: "/etc/nginx/sites-available/sonarqube"
+    content: |
+      server {
+          listen 80;
+          server_name sonarqube.groophy.in;
+
+          access_log /var/log/nginx/sonar.access.log;
+          error_log /var/log/nginx/sonar.error.log;
+
+          proxy_buffers 16 64k;
+          proxy_buffer_size 128k;
+
+          location / {
+              proxy_pass http://127.0.0.1:9000;
+              proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+              proxy_redirect off;
+
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto http;
+          }
+      }
+
+- name: Create symbolic link for Nginx site
+  ansible.builtin.file:
+    src: "/etc/nginx/sites-available/sonarqube"
+    dest: "/etc/nginx/sites-enabled/sonarqube"
+    state: link
+
+- name: Enable Nginx service
+  ansible.builtin.service:
+    name: nginx
+    enabled: yes
+
+- name: Allow required ports in UFW
+  become: true
+  ansible.builtin.ufw:
+    rule: allow
+    port: "{{ item }}"
+    state: enabled
+  loop:
+    - 80
+    - 9000
+    - 9001
+
+- name: Reboot system
+  become: true
+  ansible.builtin.reboot:
+    reboot_timeout: 0
+  become_method: sudo
+
+- name: Playbook completed
+  debug:
+    msg: "Playbook execution completed successfully!"

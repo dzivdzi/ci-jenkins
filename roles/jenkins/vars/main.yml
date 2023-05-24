@@ -1,0 +1,3 @@
+key_link: https://pkg.jenkins.io/debian/jenkins.io-2023.key
+key_path: /usr/share/keyrings/jenkins-keyring.asc
+jenkins_source_file_path: /etc/apt/sources.list.d/jenkins.list

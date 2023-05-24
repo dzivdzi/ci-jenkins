@@ -1,0 +1,12 @@
+---
+- name: play
+  hosts: all
+  become: yes
+  tasks:
+  roles:
+    - role: jenkins
+      when: ansible_hostname == "jk01"
+    - role: nexus
+      when: ansible_hostname == "nx01"
+    - role: sonar
+      when: ansible_hostname == "son01"

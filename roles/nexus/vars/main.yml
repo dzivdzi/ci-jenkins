@@ -1,0 +1,3 @@
+# NEXUSURL: "https://download.sonatype.com/nexus/3/latest-unix.tar.gz"
+# EXTOUT: "$(tar xzvf nexus.tar.gz)"
+# NEXUSDIR: "$(echo $EXTOUT | cut -d '/' -f1)"
